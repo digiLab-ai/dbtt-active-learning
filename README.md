@@ -48,8 +48,11 @@ a more realistic spread.
 | `src/dbtt/recovery.py` | Recover `(LS, US, DBTT, C)` from data via engine BLR + a shape search |
 | `notebooks/01_simulate_dataset.ipynb` | Build and visualise a dataset |
 | `src/dbtt/active_learning.py` | `DBTTActiveLearner` — engine BO with qNIPV / PSD over test temperature |
+| `src/dbtt/backend.py` | Which uncertainty-engine is installed: in-process library, or remote SDK |
+| `src/dbtt/sdk_workflows.py` | Build/save/run DBTT workflows on the remote Engine via the SDK |
 | `notebooks/02_recover_dbtt.ipynb` | Fit the AHT parameters and test whether `C` varies with `T` |
 | `notebooks/03_bayesian_optimisation.ipynb` | Choose test temperatures by uncertainty reduction |
+| `notebooks/04_sdk_active_learning.ipynb` | The same loop as remote Engine workflows, via the SDK |
 | `tests/` | pytest suite |
 
 ## Simulator API
@@ -187,7 +190,65 @@ model 8/10 when the truth is constant and detects real asymmetry 8/10 when it is
 so the answer is not just a preference for the simpler model. The asymmetric form stays
 available for welds and irradiated material.
 
+## The SDK: two environments, not one
+
+The engine **library** and the engine **SDK** are both published as `uncertainty-engine`
+and both provide a top-level `uncertainty_engine` package — but one is in-process
+modelling (`.models`, `.simulators`, `.optimisers`) and the other is a remote API client
+(`.client`, `.nodes`, `.graph`). **They cannot be installed together**: one shadows the
+other. This is a packaging collision upstream, not something this repo can work around.
+
+So there are two environments:
+
+```bash
+# .venv      -- in-process modelling (notebooks 01-03)
+uv venv --python 3.12 && uv pip install -e ".[dev]"
+uv pip install -e "../uncertainty-engine[gptorch,metrics]"
+
+# .venv-sdk  -- remote workflows (notebook 04)
+uv venv .venv-sdk --python 3.12
+uv pip install --python .venv-sdk -e ../uncertainty-engine-sdk
+uv pip install --python .venv-sdk --no-deps -e .
+uv pip install --python .venv-sdk pandas numpy pyyaml pydantic matplotlib python-dotenv pytest
+```
+
+`dbtt.backend.describe()` reports which one you are on, and `require_library()` /
+`require_sdk()` fail with the install command rather than an opaque `ImportError`.
+
+### Credentials
+
+Copy `.env.example` to `.env` and fill in `UE_USERNAME` / `UE_PASSWORD`; on Colab use the
+Secrets panel with the same keys. `load_credentials()` reads Colab secrets first, then
+`.env`, and reports only *where* credentials came from, never their values. `.env` is
+gitignored.
+
+### Workflows
+
+`sdk_workflows` builds three graphs, mirroring the gold-miner example:
+
+| Workflow | Nodes | Purpose |
+| --- | --- | --- |
+| `build_training_workflow` | `ModelConfig` → `TrainModel` → `Save` | Fit a GP on the campaign, save it as a project resource |
+| `build_prediction_workflow` | `LoadModel` + `LoadDataset` → `PredictModel` | Model visualisation: mean and uncertainty across the range |
+| `build_recommendation_workflow` | `LoadModel` → `Recommend` | Active learning: the next test temperature |
+
+`save_workflow` puts each into the project workspace, so it appears in the GUI and can be
+re-run, versioned and edited — the point of building them programmatically.
+
+**Status:** the graphs are verified to build and wire correctly against the real SDK, and
+`tests/test_sdk_workflows.py` asserts that (skipping unless run on `.venv-sdk`). Nothing
+has been run against a live Uncertainty Engine — that needs your credentials and a project
+created in the GUI, so those steps are guarded and were skipped.
+
 ## Tests
+
+The suites split by environment:
+
+```bash
+.venv/bin/python -m pytest -q                              # in-process (SDK tests skip)
+.venv-sdk/bin/python -m pytest tests/test_sdk_workflows.py -q   # SDK workflow graphs
+```
+
 
 ```bash
 .venv/bin/python -m pytest -q
