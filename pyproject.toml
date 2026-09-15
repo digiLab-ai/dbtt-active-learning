@@ -13,6 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "jupyter>=1.0", "nbclient>=0.10"]
+# The engine is a sister repo, installed editable:
+#   uv pip install -e "../uncertainty-engine[gptorch,metrics]"
+# It is not declared as a dependency because it is not published to an index,
+# and because its distribution name collides with the SDK's (see README).
+engine = ["scipy>=1.13", "torch>=2.0"]
 
 [build-system]
 requires = ["hatchling"]

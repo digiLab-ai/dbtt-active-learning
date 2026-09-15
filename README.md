@@ -45,7 +45,9 @@ a more realistic spread.
 | `src/dbtt/plotting.py` | `plot_dataset` — scatter of energy absorbed vs test temperature |
 | `configs/eurofer_eaf.yaml` | Default configuration |
 | `data/*.csv` | Simulated campaigns (gitignored) |
+| `src/dbtt/recovery.py` | Recover `(LS, US, DBTT, C)` from data via engine BLR + a shape search |
 | `notebooks/01_simulate_dataset.ipynb` | Build and visualise a dataset |
+| `notebooks/02_recover_dbtt.ipynb` | Fit the AHT parameters and test whether `C` varies with `T` |
 | `tests/` | pytest suite |
 
 ## Simulator API
@@ -116,6 +118,45 @@ notebook with plain pandas.
   the same temperature give different energies — as in a real campaign.
 - Requested temperatures outside `temperature_range` are rejected rather than silently
   extrapolated.
+
+## The uncertainty-engine
+
+`src/dbtt/recovery.py` uses the engine's `BayesianLinearRegression`. The engine is a
+sister repo, installed editable rather than from an index:
+
+```bash
+uv pip install -e "../uncertainty-engine[gptorch,metrics]"
+```
+
+### Recovering the AHT parameters
+
+Conditional on the shape `(DBTT, C)`, the AHT is *linear* in the shelves —
+`Y = a + b·tanh((T−DBTT)/C)` with `a=(LS+US)/2`, `b=(US−LS)/2`. So BLR gives a
+closed-form shelf posterior plus a log marginal likelihood, and only the two nonlinear
+shape parameters need an outer search.
+
+Two things the fit has to get right, both found by the fit failing first:
+
+- **Heteroscedastic noise.** Charpy scatter grows with absorbed energy. A homoscedastic
+  fit over-weights the quiet lower shelf and collapses onto degenerate narrow widths
+  (recovering `C=16.6` against a true `30`). `recover` whitens by a `sigma(T)` estimated
+  from a first pass.
+- **Fixed weights.** Those weights are estimated once and held fixed. Re-estimating them
+  per candidate shape makes the evidences incomparable and the optimiser games it. The
+  evidence carries the `sum(log w)` Jacobian term so it stays a density over the original
+  energies.
+
+Calibration is measured, not assumed: noiseless recovery is exact to 4 decimal places,
+and the nominal 95% DBTT profile interval achieves ~88% empirical coverage (mildly
+over-confident, because the estimated weights are treated as known).
+
+### Is `C` really `C(T)`?
+
+No — for this material it is a constant. `compare_width_models` fits both and compares by
+profile evidence, BIC and leave-one-out RMSE. Over 10 noise seeds it picks the constant
+model 8/10 when the truth is constant and detects real asymmetry 8/10 when it is there,
+so the answer is not just a preference for the simpler model. The asymmetric form stays
+available for welds and irradiated material.
 
 ## Tests
 
