@@ -47,7 +47,9 @@ a more realistic spread.
 | `data/*.csv` | Simulated campaigns (gitignored) |
 | `src/dbtt/recovery.py` | Recover `(LS, US, DBTT, C)` from data via engine BLR + a shape search |
 | `notebooks/01_simulate_dataset.ipynb` | Build and visualise a dataset |
+| `src/dbtt/active_learning.py` | `DBTTActiveLearner` — engine BO with qNIPV / PSD over test temperature |
 | `notebooks/02_recover_dbtt.ipynb` | Fit the AHT parameters and test whether `C` varies with `T` |
+| `notebooks/03_bayesian_optimisation.ipynb` | Choose test temperatures by uncertainty reduction |
 | `tests/` | pytest suite |
 
 ## Simulator API
@@ -149,6 +151,33 @@ Two things the fit has to get right, both found by the fit failing first:
 Calibration is measured, not assumed: noiseless recovery is exact to 4 decimal places,
 and the nominal 95% DBTT profile interval achieves ~88% empirical coverage (mildly
 over-confident, because the estimated weights are treated as known).
+
+### Active learning
+
+`DBTTActiveLearner` wraps the engine's `BayesianOptimisation` in an ask / run-the-
+simulator / tell loop over a single input, test temperature:
+
+```python
+from dbtt.active_learning import DBTTActiveLearner
+
+learner = DBTTActiveLearner(simulator, bounds=(-150, 100), acquisition="qNIPV")
+for step in learner.run(8):
+    print(step.temperature, step.energy)
+```
+
+The initial design is the two limits of the testable range: they pin the shelves the
+transition sits between, without which the curve is unidentifiable. Then `qNIPV`
+(integrated posterior variance, global) or `PSD`/`qPSD` (posterior standard deviation,
+greedy) chooses each next temperature.
+
+Two things worth knowing:
+
+- The plotted band is the **predictive** standard deviation, so it plateaus at the
+  material's test-to-test scatter rather than shrinking to zero. The latent-only spread
+  would be the purer measure of what active learning reduces, but this GP's latent
+  covariance is numerically singular and Cholesky fails on it at any grid size.
+- `dbtt_estimate()` reads the DBTT off the GP posterior mean and carries **no uncertainty
+  of its own**. For a DBTT with an interval, fit the AHT with `recovery.recover`.
 
 ### Is `C` really `C(T)`?
 
