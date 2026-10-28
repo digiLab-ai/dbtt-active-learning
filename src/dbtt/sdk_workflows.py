@@ -165,6 +165,50 @@ def upload_dataset(client, project_id: str, frame: pd.DataFrame, name: str) -> s
 # ---------------------------------------------------------------------------
 # workflows
 # ---------------------------------------------------------------------------
+#: Node versions for the clientless build path. SDK 0.15 dropped its per-node
+#: classes: a node is now built off the client, which resolves its schema from
+#: the Node Registry on demand. With no client there is nothing to resolve
+#: against, so the version has to be named here — these are the versions the
+#: 0.14 node classes pinned.
+_NODE_VERSIONS: Dict[str, str] = {
+    "LoadDataset": "0.2.0",
+    "LoadModel": "0.2.0",
+    "ModelConfig": "0.2.0",
+    "PredictModel": "0.2.0",
+    "Recommend": "0.2.0",
+    "Save": "0.2.0",
+    "TrainModel": "0.2.0",
+}
+
+
+def _node(client, node_name: str, label: str, **inputs):
+    """Build a node by name.
+
+    With a client, the schema is resolved from the Node Registry and the inputs
+    are validated against it. Without one — as the builder tests do, to check
+    the wiring offline — the node is built at a pinned version, unvalidated.
+    """
+    if client is not None:
+        return client.nodes(node_name, label=label, **inputs)
+
+    from uncertainty_engine.nodes.base import Node
+
+    return Node(
+        node_name=node_name,
+        version=_NODE_VERSIONS[node_name],
+        label=label,
+        client=None,
+        **inputs,
+    )
+
+
+def _resource(resource_id: str) -> Dict[str, str]:
+    """A resource id in the serialised form the load nodes take."""
+    from uncertainty_engine_types import ResourceID
+
+    return ResourceID(id=resource_id).model_dump()
+
+
 def _workflow(graph, client=None):
     """Wrap a populated graph as an executable workflow."""
     from uncertainty_engine.nodes.workflow import Workflow
@@ -192,38 +236,43 @@ def build_training_workflow(
     """
     require_sdk()
     from uncertainty_engine.graph import Graph
-    from uncertainty_engine.nodes.machine_learning import ModelConfig, TrainModel
-    from uncertainty_engine.nodes.resource_management import LoadDataset, Save
 
     graph = Graph()
 
-    config = ModelConfig(
-        model_type="SingleTaskGPTorch", seed=seed, label="GP config", client=client
+    config = _node(
+        client, "ModelConfig", "GP config",
+        model_type="SingleTaskGPTorch",
+        kernel=None,
+        warp_inputs=False,
+        seed=seed,
+        input_variance=None,
+        input_retained_dimensions=None,
+        output_variance=None,
+        output_retained_dimensions=None,
     )
-    load_x = LoadDataset(
-        project_id=project_id, file_id=x_resource_id,
-        label="Load temperatures", client=client,
+    load_x = _node(
+        client, "LoadDataset", "Load temperatures",
+        project_id=project_id, file_id=_resource(x_resource_id),
     )
-    load_y = LoadDataset(
-        project_id=project_id, file_id=y_resource_id,
-        label="Load energies", client=client,
+    load_y = _node(
+        client, "LoadDataset", "Load energies",
+        project_id=project_id, file_id=_resource(y_resource_id),
     )
     for node in (config, load_x, load_y):
         graph.add_node(node)
 
-    train = TrainModel(
+    train = _node(
+        client, "TrainModel", "Train GP",
         config=config.make_handle("model_config"),
         inputs=load_x.make_handle("dataset"),
         outputs=load_y.make_handle("dataset"),
-        label="Train GP",
-        client=client,
     )
-    save = Save(
+    save = _node(
+        client, "Save", "Save GP",
         data=train.make_handle("model"),
-        file_name=model_name,
+        # The node input is `file_id`, but it holds the human-readable name.
+        file_id=model_name,
         project_id=project_id,
-        label="Save GP",
-        client=client,
     )
     graph.add_node(train)
     graph.add_node(save)
@@ -240,26 +289,23 @@ def build_prediction_workflow(
     """
     require_sdk()
     from uncertainty_engine.graph import Graph
-    from uncertainty_engine.nodes.machine_learning import PredictModel
-    from uncertainty_engine.nodes.resource_management import LoadDataset, LoadModel
 
     graph = Graph()
-    load_model = LoadModel(
-        project_id=project_id, file_id=model_resource_id,
-        label="Load GP", client=client,
+    load_model = _node(
+        client, "LoadModel", "Load GP",
+        project_id=project_id, file_id=_resource(model_resource_id),
     )
-    load_grid = LoadDataset(
-        project_id=project_id, file_id=grid_resource_id,
-        label="Load grid", client=client,
+    load_grid = _node(
+        client, "LoadDataset", "Load grid",
+        project_id=project_id, file_id=_resource(grid_resource_id),
     )
     graph.add_node(load_model)
     graph.add_node(load_grid)
 
-    predict = PredictModel(
+    predict = _node(
+        client, "PredictModel", "Predict curve",
         model=load_model.make_handle("model"),
         dataset=load_grid.make_handle("dataset"),
-        label="Predict curve",
-        client=client,
     )
     graph.add_node(predict)
     return _workflow(graph, client)
@@ -283,22 +329,19 @@ def build_recommendation_workflow(
             f"acquisition must be one of {sorted(ACQUISITIONS)}, got {acquisition!r}"
         )
     from uncertainty_engine.graph import Graph
-    from uncertainty_engine.nodes.machine_learning import Recommend
-    from uncertainty_engine.nodes.resource_management import LoadModel
 
     graph = Graph()
-    load_model = LoadModel(
-        project_id=project_id, file_id=model_resource_id,
-        label="Load GP", client=client,
+    load_model = _node(
+        client, "LoadModel", "Load GP",
+        project_id=project_id, file_id=_resource(model_resource_id),
     )
     graph.add_node(load_model)
 
-    recommend = Recommend(
+    recommend = _node(
+        client, "Recommend", f"Recommend ({acquisition})",
         acquisition_function=ACQUISITIONS[acquisition],
         model=load_model.make_handle("model"),
         num_of_points=num_points,
-        label=f"Recommend ({acquisition})",
-        client=client,
     )
     graph.add_node(recommend)
     return _workflow(graph, client)

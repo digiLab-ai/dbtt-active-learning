@@ -207,10 +207,15 @@ uv pip install -e "../uncertainty-engine[gptorch,metrics]"
 
 # .venv-sdk  -- remote workflows (notebook 04)
 uv venv .venv-sdk --python 3.12
-uv pip install --python .venv-sdk -e ../uncertainty-engine-sdk
-uv pip install --python .venv-sdk --no-deps -e .
-uv pip install --python .venv-sdk pandas numpy pyyaml pydantic matplotlib python-dotenv pytest
+uv pip install --python .venv-sdk -e ".[sdk]"
+uv pip install --python .venv-sdk pandas numpy pyyaml pydantic matplotlib pytest
 ```
+
+The SDK comes from PyPI, pinned to `>=0.15,<0.16`. **0.15 is a breaking change**:
+it dropped the per-node classes (`uncertainty_engine.nodes.machine_learning`,
+`.resource_management`) in favour of building nodes by name off the client,
+`client.nodes.TrainModel(...)`, with each schema resolved from the Node Registry
+on demand. `sdk_workflows` builds nodes that way; earlier SDKs will not work.
 
 `dbtt.backend.describe()` reports which one you are on, and `require_library()` /
 `require_sdk()` fail with the install command rather than an opaque `ImportError`.

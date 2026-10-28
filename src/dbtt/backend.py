@@ -36,7 +36,7 @@ _SDK_HINT = (
     "The uncertainty-engine SDK is not installed in this environment. Install it "
     "into a separate virtualenv:\n"
     "    uv venv .venv-sdk --python 3.12\n"
-    '    uv pip install --python .venv-sdk -e "../uncertainty-engine-sdk"\n'
+    '    uv pip install --python .venv-sdk -e ".[sdk]"\n'
     "It cannot share an environment with the in-process library: both "
     "distributions provide the top-level `uncertainty_engine` package."
 )
