@@ -4,6 +4,12 @@ The builder tests need the SDK, which cannot share an environment with the
 in-process library, so they skip unless run in the SDK environment:
 
     .venv-sdk/bin/python -m pytest tests/test_sdk_workflows.py
+
+They build every graph with ``client=None``, which skips schema resolution and
+validation. That checks the *wiring* — labels, edges and requested outputs —
+against the workflows exported from the Engine GUI, without a network call. It
+cannot check the inputs against the live node schemas; only running against the
+Engine does that.
 """
 
 import os
@@ -18,24 +24,34 @@ needs_sdk = pytest.mark.skipif(
 )
 
 
+def nodes(workflow):
+    return workflow.graph["nodes"]
+
+
+def edge(workflow, label, key):
+    """The (node_name, node_handle) an input of ``label`` is wired to."""
+    wired = nodes(workflow)[label]["inputs"][key]
+    return wired["node_name"], wired["node_handle"]
+
+
 # --- these run anywhere ----------------------------------------------------
 def test_acquisition_names_map_to_sdk_values():
     assert W.ACQUISITIONS["qNIPV"] == "MonteCarloNegativeIntegratedPosteriorVariance"
     assert W.ACQUISITIONS["PSD"] == "PosteriorStandardDeviation"
 
 
-def test_campaign_to_frames_splits_x_and_y():
-    x, y = W.campaign_to_frames([-100.0, 0.0], [5.0, 190.0])
-    assert list(x.columns) == ["temperature_C"]
-    assert list(y.columns) == ["energy_J"]
-    assert len(x) == len(y) == 2
+def test_columns_match_what_the_simulator_emits():
+    from dbtt.simulator import ENERGY_COL, TEMPERATURE_COL
+
+    assert W.INPUT_COLUMNS == [TEMPERATURE_COL]
+    assert W.OUTPUT_COLUMNS == [ENERGY_COL]
 
 
 def test_temperature_grid_spans_the_bounds():
     grid = W.temperature_grid((-150.0, 100.0), n=11)
     assert len(grid) == 11
-    assert grid["temperature_C"].iloc[0] == -150.0
-    assert grid["temperature_C"].iloc[-1] == 100.0
+    assert grid[W.INPUT_COLUMNS[0]].iloc[0] == -150.0
+    assert grid[W.INPUT_COLUMNS[0]].iloc[-1] == 100.0
 
 
 def test_credentials_present_reads_the_environment(monkeypatch):
@@ -62,6 +78,18 @@ def test_load_credentials_reads_a_dotenv(monkeypatch, tmp_path):
     assert os.environ["UE_USERNAME"] == "someone"
 
 
+def test_project_name_prefers_the_override(monkeypatch):
+    monkeypatch.setenv(W.PROJECT_KEY, "FromEnv")
+    assert W.project_name() == "FromEnv"
+    assert W.project_name("Explicit") == "Explicit"
+
+
+def test_project_name_refuses_when_unset(monkeypatch):
+    monkeypatch.delenv(W.PROJECT_KEY, raising=False)
+    with pytest.raises(RuntimeError, match="No Engine project named"):
+        W.project_name()
+
+
 def test_backend_detection_is_one_of_three():
     assert backend.detect_backend() in ("library", "sdk", "none")
     assert backend.has_library() != backend.has_sdk() or backend.detect_backend() == "none"
@@ -75,47 +103,139 @@ def test_backend_describe_is_consistent():
 
 def test_bad_acquisition_is_rejected_before_touching_the_sdk():
     with pytest.raises((ValueError, ImportError)):
-        W.build_recommendation_workflow(None, "p", "m", acquisition="nope")
+        W.build_recommendation_workflow(None, "p", "m", "pts", acquisition="nope")
 
 
 # --- these need the SDK ----------------------------------------------------
 @needs_sdk
-def test_training_workflow_wires_config_and_data():
-    wf = W.build_training_workflow(None, "proj", "x-id", "y-id", "dbtt_gp")
-    nodes = wf.graph["nodes"]
-    assert set(nodes) == {
-        "GP config", "Load temperatures", "Load energies", "Train GP", "Save GP",
+def test_training_workflow_splits_one_dataset_into_x_and_y():
+    wf = W.build_training_workflow(None, "proj", "data-id", "dbtt_gp")
+    assert set(nodes(wf)) == {
+        "Experimental Data", "Temp", "Energy", "Gaussian Process",
+        "Train Model", "Save",
     }
-    train = nodes["Train GP"]["inputs"]
-    assert train["config"]["node_name"] == "GP config"
-    assert train["inputs"]["node_name"] == "Load temperatures"
-    assert train["outputs"]["node_name"] == "Load energies"
-    assert nodes["Save GP"]["inputs"]["data"]["node_name"] == "Train GP"
+    # Both filters read the single uploaded dataset, whose handle is `file`.
+    assert edge(wf, "Temp", "dataset") == ("Experimental Data", "file")
+    assert edge(wf, "Energy", "dataset") == ("Experimental Data", "file")
+    assert edge(wf, "Train Model", "config") == ("Gaussian Process", "config")
+    assert edge(wf, "Train Model", "inputs") == ("Temp", "dataset")
+    assert edge(wf, "Train Model", "outputs") == ("Energy", "dataset")
+    assert edge(wf, "Save", "data") == ("Train Model", "model")
 
 
 @needs_sdk
-def test_prediction_workflow_predicts_from_the_saved_model():
-    wf = W.build_prediction_workflow(None, "proj", "dbtt_gp", "grid-id")
-    nodes = wf.graph["nodes"]
-    assert set(nodes) == {"Load GP", "Load grid", "Predict curve"}
-    predict = nodes["Predict curve"]["inputs"]
-    assert predict["model"]["node_name"] == "Load GP"
-    assert predict["dataset"]["node_name"] == "Load grid"
+def test_training_workflow_filters_the_simulator_columns():
+    wf = W.build_training_workflow(None, "proj", "data-id", "dbtt_gp")
+    inputs = wf.inputs
+    assert inputs["Temp_columns"] == W.INPUT_COLUMNS
+    assert inputs["Energy_columns"] == W.OUTPUT_COLUMNS
+    assert inputs["Gaussian Process_kernel"] == "LIN+RBF"
+    assert inputs["Save_file_id"] == "dbtt_gp"
 
 
 @needs_sdk
-def test_recommendation_workflow_uses_the_trained_model():
-    wf = W.build_recommendation_workflow(None, "proj", "dbtt_gp", "qNIPV", 2)
-    nodes = wf.graph["nodes"]
-    assert "Recommend (qNIPV)" in nodes
-    assert nodes["Recommend (qNIPV)"]["inputs"]["model"]["node_name"] == "Load GP"
+def test_recommendation_workflow_saves_the_new_points():
+    wf = W.build_recommendation_workflow(None, "proj", "model-id", "next_point")
+    assert set(nodes(wf)) == {"Model", "Active Learning", "Save"}
+    assert edge(wf, "Active Learning", "model") == ("Model", "file")
+    assert edge(wf, "Save", "data") == ("Active Learning", "recommended_points")
+    assert wf.inputs["Active Learning_acquisition_function"] == W.ACQUISITIONS["qNIPV"]
+    assert set(wf.requested_output) == {
+        "Save_saved_resource", "Active Learning_recommended_points",
+    }
 
 
 @needs_sdk
 def test_every_acquisition_builds():
     for acquisition in W.ACQUISITIONS:
-        wf = W.build_recommendation_workflow(None, "proj", "m", acquisition)
-        assert f"Recommend ({acquisition})" in wf.graph["nodes"]
+        wf = W.build_recommendation_workflow(None, "proj", "m", "pts", acquisition)
+        assert wf.inputs["Active Learning_acquisition_function"] == W.ACQUISITIONS[acquisition]
+
+
+@needs_sdk
+def test_gp_plot_workflow_slices_the_model_input_column():
+    wf = W.build_gp_plot_workflow(None, "proj", "model-id", (-80.0, 100.0))
+    assert set(nodes(wf)) == {"Model", "Slice", "Predict", "Uncertainty Plot"}
+    assert edge(wf, "Predict", "model") == ("Model", "file")
+    assert edge(wf, "Predict", "dataset") == ("Slice", "data")
+    assert edge(wf, "Uncertainty Plot", "X") == ("Slice", "data")
+    assert edge(wf, "Uncertainty Plot", "prediction") == ("Predict", "prediction")
+    assert edge(wf, "Uncertainty Plot", "uncertainty") == ("Predict", "uncertainty")
+    # The slice variable is the trained input column, not the filter's label.
+    assert wf.inputs["Slice_variable"] == W.INPUT_COLUMNS[0]
+    assert wf.inputs["Slice_num_points"] == 101
+    assert set(wf.requested_output) == {"Uncertainty Plot_data", "Slice_data"}
+
+
+@needs_sdk
+def test_validation_workflow_scores_against_held_out_truth():
+    wf = W.build_validation_workflow(None, "proj", "model-id", "holdout-id")
+    assert set(nodes(wf)) == {
+        "Model", "Validation Data", "Temp", "Energy",
+        "Predict", "Score", "Parity Plot",
+    }
+    assert edge(wf, "Predict", "dataset") == ("Temp", "dataset")
+    assert edge(wf, "Score", "predictions") == ("Predict", "prediction")
+    assert edge(wf, "Score", "truth") == ("Energy", "dataset")
+    assert edge(wf, "Score", "predictions_uncertainty") == ("Predict", "uncertainty")
+    assert edge(wf, "Parity Plot", "expected") == ("Energy", "dataset")
+    assert wf.inputs["Score_metrics"] == ["MSE", "RMSE", "R2"]
+    assert set(wf.requested_output) == {"Score_scores", "Parity Plot_plot"}
+
+
+def test_outputs_unwraps_the_nested_payload():
+    class Response:
+        outputs = {"outputs": {"Save_saved_resource": {"id": "abc"}}}
+
+    assert W.outputs(Response()) == {"Save_saved_resource": {"id": "abc"}}
+
+
+def test_outputs_tolerates_an_unwrapped_payload():
+    class Response:
+        outputs = {"Save_saved_resource": {"id": "abc"}}
+
+    assert W.outputs(Response()) == {"Save_saved_resource": {"id": "abc"}}
+
+
+def test_as_frame_parses_a_csv_payload():
+    frame = W.as_frame({"csv": "metric_name,score\nRMSE,1.62\nR2,0.99\n"})
+    assert list(frame.columns) == ["metric_name", "score"]
+    assert frame.loc[frame["metric_name"] == "R2", "score"].item() == 0.99
+
+
+def test_as_frame_passes_records_through():
+    assert W.as_frame([{"a": 1}, {"a": 2}])["a"].tolist() == [1, 2]
+
+
+def test_uncertainty_curve_reads_the_plot_payload():
+    class Response:
+        outputs = {"outputs": {"Uncertainty Plot_data": {
+            "x_label": "Test temperature (C)",
+            "x_vals": [10.0, -10.0],
+            "mean": [2.0, 1.0],
+            "std": [0.5, 0.4],
+        }}}
+
+    curve = W.uncertainty_curve(Response())
+    assert list(curve.columns) == ["Test temperature (C)", "mean", "sd"]
+    # Sorted by temperature, so the band can be drawn without reordering.
+    assert curve["Test temperature (C)"].tolist() == [-10.0, 10.0]
+    assert curve["mean"].tolist() == [1.0, 2.0]
+
+
+@needs_sdk
+def test_duplicate_labels_are_refused():
+    from uncertainty_engine.exceptions import GraphValidationError
+    from uncertainty_engine.nodes.base import Node
+
+    graph = W._graph()
+    for _ in range(2):
+        node = Node(node_name="Save", version="0.6.0", label="Save", client=None)
+        if _ == 0:
+            graph.add_node(node)
+        else:
+            with pytest.raises(GraphValidationError):
+                graph.add_node(node)
 
 
 @needs_sdk
