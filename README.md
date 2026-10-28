@@ -45,14 +45,10 @@ a more realistic spread.
 | `src/dbtt/plotting.py` | `plot_dataset` — scatter of energy absorbed vs test temperature |
 | `configs/eurofer_eaf.yaml` | Default configuration |
 | `data/*.csv` | Simulated campaigns (gitignored) |
-| `src/dbtt/recovery.py` | Recover `(LS, US, DBTT, C)` from data via engine BLR + a shape search |
 | `notebooks/01_simulate_dataset.ipynb` | Build and visualise a dataset |
-| `src/dbtt/active_learning.py` | `DBTTActiveLearner` — engine BO with qNIPV / PSD over test temperature |
-| `src/dbtt/backend.py` | Which uncertainty-engine is installed: in-process library, or remote SDK |
+| `notebooks/05_engine_active_learning.ipynb` | Active learning as remote Engine workflows |
+| `src/dbtt/backend.py` | Whether the uncertainty-engine SDK is installed |
 | `src/dbtt/sdk_workflows.py` | Build/save/run DBTT workflows on the remote Engine via the SDK |
-| `notebooks/02_recover_dbtt.ipynb` | Fit the AHT parameters and test whether `C` varies with `T` |
-| `notebooks/03_bayesian_optimisation.ipynb` | Choose test temperatures by uncertainty reduction |
-| `notebooks/04_sdk_active_learning.ipynb` | The same loop as remote Engine workflows, via the SDK |
 | `tests/` | pytest suite |
 
 ## Simulator API
@@ -85,7 +81,7 @@ the GP. Use it only to score how well active learning recovers the DBTT.
 ## Setup
 
 ```bash
-uv venv --python 3.12 && uv pip install -e ".[dev]"
+uv venv --python 3.12 && uv pip install -e ".[dev,sdk]"
 ```
 
 ## Usage
@@ -124,101 +120,28 @@ notebook with plain pandas.
 - Requested temperatures outside `temperature_range` are rejected rather than silently
   extrapolated.
 
-## The uncertainty-engine
+## The SDK
 
-`src/dbtt/recovery.py` uses the engine's `BayesianLinearRegression`. The engine is a
-sister repo, installed editable rather than from an index:
+Everything that models — the GP, the acquisition, the scoring — runs on the **remote
+Uncertainty Engine**, reached through its SDK (`uncertainty-engine` on PyPI, pinned
+`>=0.15,<0.16`). This repo holds the simulator that stands in for the test house, and the
+code that builds Engine workflows and drives them.
 
-```bash
-uv pip install -e "../uncertainty-engine[gptorch,metrics]"
-```
+0.15 is a breaking change against earlier SDKs: it dropped the per-node classes in favour
+of building nodes by name off the client, `client.nodes.TrainModel(...)`, with each schema
+resolved from the Node Registry on demand. `sdk_workflows` builds its nodes that way and
+pins no versions when a client is present.
 
-### Recovering the AHT parameters
-
-Conditional on the shape `(DBTT, C)`, the AHT is *linear* in the shelves —
-`Y = a + b·tanh((T−DBTT)/C)` with `a=(LS+US)/2`, `b=(US−LS)/2`. So BLR gives a
-closed-form shelf posterior plus a log marginal likelihood, and only the two nonlinear
-shape parameters need an outer search.
-
-Two things the fit has to get right, both found by the fit failing first:
-
-- **Heteroscedastic noise.** Charpy scatter grows with absorbed energy. A homoscedastic
-  fit over-weights the quiet lower shelf and collapses onto degenerate narrow widths
-  (recovering `C=16.6` against a true `30`). `recover` whitens by a `sigma(T)` estimated
-  from a first pass.
-- **Fixed weights.** Those weights are estimated once and held fixed. Re-estimating them
-  per candidate shape makes the evidences incomparable and the optimiser games it. The
-  evidence carries the `sum(log w)` Jacobian term so it stays a density over the original
-  energies.
-
-Calibration is measured, not assumed: noiseless recovery is exact to 4 decimal places,
-and the nominal 95% DBTT profile interval achieves ~88% empirical coverage (mildly
-over-confident, because the estimated weights are treated as known).
-
-### Active learning
-
-`DBTTActiveLearner` wraps the engine's `BayesianOptimisation` in an ask / run-the-
-simulator / tell loop over a single input, test temperature:
-
-```python
-from dbtt.active_learning import DBTTActiveLearner
-
-learner = DBTTActiveLearner(simulator, bounds=(-150, 100), acquisition="qNIPV")
-for step in learner.run(8):
-    print(step.temperature, step.energy)
-```
-
-The initial design is the two limits of the testable range: they pin the shelves the
-transition sits between, without which the curve is unidentifiable. Then `qNIPV`
-(integrated posterior variance, global) or `PSD`/`qPSD` (posterior standard deviation,
-greedy) chooses each next temperature.
-
-Two things worth knowing:
-
-- The plotted band is the **predictive** standard deviation, so it plateaus at the
-  material's test-to-test scatter rather than shrinking to zero. The latent-only spread
-  would be the purer measure of what active learning reduces, but this GP's latent
-  covariance is numerically singular and Cholesky fails on it at any grid size.
-- `dbtt_estimate()` reads the DBTT off the GP posterior mean and carries **no uncertainty
-  of its own**. For a DBTT with an interval, fit the AHT with `recovery.recover`.
-
-### Is `C` really `C(T)`?
-
-No — for this material it is a constant. `compare_width_models` fits both and compares by
-profile evidence, BIC and leave-one-out RMSE. Over 10 noise seeds it picks the constant
-model 8/10 when the truth is constant and detects real asymmetry 8/10 when it is there,
-so the answer is not just a preference for the simpler model. The asymmetric form stays
-available for welds and irradiated material.
-
-## The SDK: two environments, not one
-
-The engine **library** and the engine **SDK** are both published as `uncertainty-engine`
-and both provide a top-level `uncertainty_engine` package — but one is in-process
-modelling (`.models`, `.simulators`, `.optimisers`) and the other is a remote API client
-(`.client`, `.nodes`, `.graph`). **They cannot be installed together**: one shadows the
-other. This is a packaging collision upstream, not something this repo can work around.
-
-So there are two environments:
+One environment is enough:
 
 ```bash
-# .venv      -- in-process modelling (notebooks 01-03)
-uv venv --python 3.12 && uv pip install -e ".[dev]"
-uv pip install -e "../uncertainty-engine[gptorch,metrics]"
-
-# .venv-sdk  -- remote workflows (notebook 04)
-uv venv .venv-sdk --python 3.12
-uv pip install --python .venv-sdk -e ".[sdk]"
-uv pip install --python .venv-sdk pandas numpy pyyaml pydantic matplotlib pytest
+uv venv --python 3.12 && uv pip install -e ".[dev,sdk]"
 ```
 
-The SDK comes from PyPI, pinned to `>=0.15,<0.16`. **0.15 is a breaking change**:
-it dropped the per-node classes (`uncertainty_engine.nodes.machine_learning`,
-`.resource_management`) in favour of building nodes by name off the client,
-`client.nodes.TrainModel(...)`, with each schema resolved from the Node Registry
-on demand. `sdk_workflows` builds nodes that way; earlier SDKs will not work.
-
-`dbtt.backend.describe()` reports which one you are on, and `require_library()` /
-`require_sdk()` fail with the install command rather than an opaque `ImportError`.
+An unpublished distribution of the same name provides an *in-process* modelling library
+and shadows the SDK if installed alongside it. This repo no longer uses it;
+`dbtt.backend.describe()` reports which one you have, and `require_sdk()` fails with the
+install command rather than an opaque `ImportError`.
 
 ### Credentials
 
@@ -229,30 +152,53 @@ gitignored.
 
 ### Workflows
 
-`sdk_workflows` builds three graphs, mirroring the gold-miner example:
+`sdk_workflows` builds five graphs — the four exported from the Engine GUI, plus one that
+saves the posterior as a reusable dataset:
 
 | Workflow | Nodes | Purpose |
 | --- | --- | --- |
-| `build_training_workflow` | `ModelConfig` → `TrainModel` → `Save` | Fit a GP on the campaign, save it as a project resource |
-| `build_prediction_workflow` | `LoadModel` + `LoadDataset` → `PredictModel` | Model visualisation: mean and uncertainty across the range |
-| `build_recommendation_workflow` | `LoadModel` → `Recommend` | Active learning: the next test temperature |
+| `build_training_workflow` | `LoadDataset` → `FilterDataset` ×2 → `ModelConfig` → `TrainModel` → `Save` | Fit a GP on the campaign, save it as a project resource |
+| `build_recommendation_workflow` | `LoadModel` → `Recommend` → `Save` | Active learning: the next test temperature |
+| `build_gp_plot_workflow` | `LoadModel` + `CreateDatasetSlice` → `PredictModel` → `UncertaintyPlot` | Model visualisation, returned inline with the job |
+| `build_prediction_workflow` | `LoadModel` + `CreateDatasetSlice` → `PredictModel` → `Save` ×2 | The same posterior, **saved** as project datasets |
+| `build_validation_workflow` | `LoadModel` + `LoadDataset` → `FilterDataset` ×2 → `PredictModel` → `ScoreModel` + `ParityPlot` | Score against held-out data, with a parity plot |
+
+The campaign is uploaded as **one** dataset and `FilterDataset` splits out the input and
+output columns, so each active-learning iteration re-uploads a single CSV.
 
 `save_workflow` puts each into the project workspace, so it appears in the GUI and can be
-re-run, versioned and edited — the point of building them programmatically.
+re-run, versioned and edited — the point of building them programmatically. The loop then
+calls them back by id with `run_saved`.
 
-**Status:** the graphs are verified to build and wire correctly against the real SDK, and
-`tests/test_sdk_workflows.py` asserts that (skipping unless run on `.venv-sdk`). Nothing
-has been run against a live Uncertainty Engine — that needs your credentials and a project
-created in the GUI, so those steps are guarded and were skipped.
+Two things worth knowing about reading results:
+
+- **Only some outputs are values.** `UncertaintyPlot` returns the posterior inline;
+  `PredictModel`'s and `Recommend`'s own handles return S3 references. That is why the
+  loop plots the first and reads recommended points from the resource `Save` wrote, and
+  why `build_prediction_workflow` exists at all — a plot payload dies with the job, a
+  saved dataset does not.
+- **Creating and versioning are different calls.** `resources.upload` refuses a name the
+  project already holds (409); `resources.update` adds a version and keeps the resource
+  id. The saved workflows point at that id, so `upload_dataset` picks the right call and
+  the graphs never need editing between iterations. Workflow names collide the same way,
+  so `save_workflow` updates an existing one rather than failing.
+
+**Status:** run end to end against a live Engine project — four iterations from a
+two-point seed design, scoring R² 0.9996 (a *training* score: the validation workflow
+scores against the campaign itself, so point it at a held-out resource for a
+generalisation estimate). `notebooks/05_engine_active_learning.ipynb` is committed with
+its outputs.
 
 ## Tests
 
-The suites split by environment:
-
 ```bash
-.venv/bin/python -m pytest -q                              # in-process (SDK tests skip)
-.venv-sdk/bin/python -m pytest tests/test_sdk_workflows.py -q   # SDK workflow graphs
+.venv/bin/python -m pytest -q
 ```
+
+The workflow-graph tests build every graph with no client, which checks the wiring —
+labels, edges and requested outputs — against the workflows exported from the Engine GUI
+without a network call. They cannot check inputs against the live node schemas; only
+running against the Engine does that.
 
 
 ```bash

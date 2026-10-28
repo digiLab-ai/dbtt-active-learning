@@ -91,14 +91,16 @@ def test_project_name_refuses_when_unset(monkeypatch):
 
 
 def test_backend_detection_is_one_of_three():
-    assert backend.detect_backend() in ("library", "sdk", "none")
-    assert backend.has_library() != backend.has_sdk() or backend.detect_backend() == "none"
+    # "library" means the in-process distribution is installed where the SDK is
+    # wanted — it shadows the SDK, and this repo cannot use it.
+    assert backend.detect_backend() in ("sdk", "library", "none")
+    assert backend.has_sdk() == (backend.detect_backend() == "sdk")
 
 
 def test_backend_describe_is_consistent():
     described = backend.describe()
-    assert described["in_process_modelling"] == (described["backend"] == "library")
     assert described["remote_workflows"] == (described["backend"] == "sdk")
+    assert "in_process_modelling" not in described
 
 
 def test_bad_acquisition_is_rejected_before_touching_the_sdk():
@@ -165,6 +167,52 @@ def test_gp_plot_workflow_slices_the_model_input_column():
     assert wf.inputs["Slice_variable"] == W.INPUT_COLUMNS[0]
     assert wf.inputs["Slice_num_points"] == 101
     assert set(wf.requested_output) == {"Uncertainty Plot_data", "Slice_data"}
+
+
+@needs_sdk
+def test_prediction_workflow_saves_mean_and_uncertainty_separately():
+    wf = W.build_prediction_workflow(
+        None, "proj", "model-id", (-80.0, 100.0), "gp_mean", "gp_sd"
+    )
+    assert set(nodes(wf)) == {
+        "Model", "Slice", "Predict", "Save Mean", "Save Uncertainty",
+    }
+    assert edge(wf, "Predict", "model") == ("Model", "file")
+    assert edge(wf, "Predict", "dataset") == ("Slice", "data")
+    # PredictModel emits mean and uncertainty as separate handles, so each
+    # needs its own Save: there is no node here that joins two datasets.
+    assert edge(wf, "Save Mean", "data") == ("Predict", "prediction")
+    assert edge(wf, "Save Uncertainty", "data") == ("Predict", "uncertainty")
+    assert wf.inputs["Save Mean_file_id"] == "gp_mean"
+    assert wf.inputs["Save Uncertainty_file_id"] == "gp_sd"
+    assert set(wf.requested_output) == {
+        "Save Mean_saved_resource", "Save Uncertainty_saved_resource", "Slice_data",
+    }
+
+
+def test_saved_prediction_joins_the_grid_with_the_downloads(monkeypatch):
+    import pandas as pd
+
+    class Response:
+        outputs = {"outputs": {
+            "Slice_data": {"csv": "Test temperature (C)\n10.0\n-10.0\n"},
+            "Save Mean_saved_resource": {"id": "mean-id"},
+            "Save Uncertainty_saved_resource": {"id": "sd-id"},
+        }}
+
+    frames = {
+        "mean-id": pd.DataFrame({"prediction": [2.0, 1.0]}),
+        "sd-id": pd.DataFrame({"uncertainty": [0.5, 0.4]}),
+    }
+    monkeypatch.setattr(W, "download_dataset", lambda c, p, rid: frames[rid])
+    monkeypatch.setattr(W, "require_sdk", lambda: None)
+
+    curve = W.saved_prediction(None, "proj", Response())
+    assert list(curve.columns) == ["Test temperature (C)", "mean", "sd"]
+    # Sorted by the input variable, so it can be plotted as a band directly.
+    assert curve["Test temperature (C)"].tolist() == [-10.0, 10.0]
+    assert curve["mean"].tolist() == [1.0, 2.0]
+    assert curve["sd"].tolist() == [0.4, 0.5]
 
 
 @needs_sdk

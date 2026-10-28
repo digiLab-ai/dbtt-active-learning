@@ -1,9 +1,8 @@
 """Build DBTT active-learning workflows on the remote Uncertainty Engine.
 
-The in-process route (`dbtt.active_learning`) runs the GP and the acquisition on
-this machine. This module does the same job through the **SDK**: it assembles
-workflow graphs, saves them to the user's project workspace, and runs them on
-the Engine.
+The GP and the acquisition run on the Engine, not here: this module assembles
+workflow graphs, saves them to the user's project workspace, and runs them
+remotely through the **SDK**.
 
 Four workflows, matching the ones exported from the Engine GUI:
 
@@ -22,8 +21,7 @@ the builders follow whatever version the Engine currently serves rather than a
 version pinned here. :data:`_NODE_VERSIONS` is only the fallback for building a
 graph with no client, which is what the tests do.
 
-Requires the SDK, which cannot share an environment with the in-process library
-— see :mod:`dbtt.backend`.
+Requires the SDK — see :mod:`dbtt.backend`.
 """
 
 from __future__ import annotations
@@ -473,6 +471,66 @@ def build_gp_plot_workflow(
     return _workflow(graph, requested, client)
 
 
+def build_prediction_workflow(
+    client,
+    project_id: str,
+    model_resource_id: str,
+    bounds: tuple[float, float],
+    mean_name: str,
+    uncertainty_name: str,
+    num_points: int = 101,
+    variable: Optional[str] = None,
+):
+    """Predict across a slice and **save** the posterior as project datasets.
+
+    The same shape as :func:`build_gp_plot_workflow`, but where that one returns
+    a plot payload that lives only as long as the job, this writes the posterior
+    mean and uncertainty to the project as datasets. They can then be downloaded
+    (see :func:`saved_prediction`), plotted alongside anything else, compared
+    between iterations, or picked up in the GUI.
+
+    Mean and uncertainty are separate resources because `PredictModel` emits them
+    as separate handles and there is no node here that joins two datasets.
+    """
+    require_sdk()
+    graph = _graph()
+
+    model = _load_model(client, project_id, model_resource_id, "Model")
+    slice_ = _node(
+        client, "CreateDatasetSlice", "Slice",
+        variable=variable or INPUT_COLUMNS[0],
+        min=str(bounds[0]),
+        max=str(bounds[1]),
+        fixed_values={},
+        num_points=num_points,
+    )
+    graph.add_node(model)
+    graph.add_node(slice_)
+
+    predict = _node(
+        client, "PredictModel", "Predict",
+        model=model.make_handle("file"),
+        dataset=slice_.make_handle("data"),
+    )
+    save_mean = _save(
+        client, predict, "prediction", project_id, mean_name, "Save Mean"
+    )
+    save_sd = _save(
+        client, predict, "uncertainty", project_id, uncertainty_name, "Save Uncertainty"
+    )
+    for node in (predict, save_mean, save_sd):
+        graph.add_node(node)
+
+    # `Slice_data` is inline CSV, so the grid the posterior is over comes back
+    # with the job and needs no download of its own.
+    requested = {
+        **_output("Save Mean", "saved_resource"),
+        **_output("Save Uncertainty", "saved_resource"),
+        **_output("Slice", "data"),
+    }
+    return _workflow(graph, requested, client)
+
+
 def build_validation_workflow(
     client,
     project_id: str,
@@ -655,6 +713,30 @@ def uncertainty_curve(response) -> pd.DataFrame:
             "sd": data["std"],
         }
     ).sort_values(data.get("x_label", INPUT_COLUMNS[0]), ignore_index=True)
+
+
+def saved_prediction(client, project_id: str, response) -> pd.DataFrame:
+    """The posterior a prediction job saved, as one frame.
+
+    Downloads the two saved datasets and puts them beside the grid, which came
+    back inline with the job. Columns: the input variable, ``mean`` and ``sd``.
+    """
+    require_sdk()
+    out = outputs(response)
+    grid = as_frame(out["Slice_data"])
+    mean = download_dataset(client, project_id, out["Save Mean_saved_resource"]["id"])
+    sd = download_dataset(
+        client, project_id, out["Save Uncertainty_saved_resource"]["id"]
+    )
+
+    frame = pd.DataFrame(
+        {
+            grid.columns[0]: grid.iloc[:, 0].to_numpy(dtype=float),
+            "mean": mean.iloc[:, 0].to_numpy(dtype=float),
+            "sd": sd.iloc[:, 0].to_numpy(dtype=float),
+        }
+    )
+    return frame.sort_values(frame.columns[0], ignore_index=True)
 
 
 def recommended_points(client, project_id: str, response) -> pd.DataFrame:
