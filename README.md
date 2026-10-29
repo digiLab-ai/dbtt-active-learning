@@ -46,7 +46,9 @@ a more realistic spread.
 | `configs/eurofer_eaf.yaml` | Default configuration |
 | `data/*.csv` | Simulated campaigns (gitignored) |
 | `notebooks/01_simulate_dataset.ipynb` | Build and visualise a dataset |
+| `src/dbtt/recovery.py` | Recover `(LS, US, DBTT, C)` from data; the DBTT posterior |
 | `notebooks/05_engine_active_learning.ipynb` | Active learning as remote Engine workflows |
+| `notebooks/06_dbtt_from_the_model.ipynb` | The DBTT and its uncertainty, two ways |
 | `src/dbtt/backend.py` | Whether the uncertainty-engine SDK is installed |
 | `src/dbtt/sdk_workflows.py` | Build/save/run DBTT workflows on the remote Engine via the SDK |
 | `tests/` | pytest suite |
@@ -119,6 +121,68 @@ notebook with plain pandas.
   the same temperature give different energies — as in a real campaign.
 - Requested temperatures outside `temperature_range` are rejected rather than silently
   extrapolated.
+
+## The DBTT, with its uncertainty
+
+The campaign exists to locate a transition temperature, so the deliverable is a DBTT
+*with* an uncertainty. `dbtt.recovery` provides two routes, and
+`notebooks/06_dbtt_from_the_model.ipynb` runs both.
+
+### 1. A posterior from the measurements
+
+Fit the AHT form, `Y(T) = (LS+US)/2 + (US-LS)/2 · tanh((T−DBTT)/C)`. Written as
+`Y = a + b·h(T)`, it is **linear in the shelves** once the shape `(DBTT, C)` is fixed, so
+the shelves and the noise precision integrate out in closed form and the marginal
+likelihood is a function of two parameters only.
+
+`dbtt_posterior` evaluates that on a grid, normalises, and marginalises out the width:
+
+```python
+from dbtt.recovery import dbtt_posterior, recover
+
+fit = recover(temperatures, energies, symmetric=True)
+posterior = dbtt_posterior(temperatures, energies, result=fit)
+print(posterior)          # DBTTPosterior(mean=-45.11, std=2.33, 95% CI=[-49.93, -39.91])
+```
+
+That is `p(DBTT | data)` itself, not a profile or a curvature approximation. Priors are
+flat in the DBTT and flat in `log C` — proper only because the grids are bounded, so a
+grid that clips the posterior will distort it.
+
+Two things the fit has to get right, both found by it failing first:
+
+- **Heteroscedastic noise.** Charpy scatter grows with absorbed energy. A homoscedastic
+  fit over-weights the quiet lower shelf and collapses onto degenerately narrow widths.
+  `recover` whitens by a `sigma(T)` estimated from a first pass.
+- **Fixed weights.** Those weights are estimated once and held fixed; re-estimating them
+  per candidate shape makes the evidences incomparable and the optimiser games it. The
+  posterior grid reuses the same fixed weights for the same reason.
+
+**Calibration is measured, not assumed.** Over 25 noise seeds the nominal 95% credible
+interval contained the truth 24 times (96%), against 92% for the profile-likelihood
+interval it replaces; bias −0.66 °C, RMSE 6.59 °C on 18-specimen campaigns.
+
+### 2. Reading it off a fitted model
+
+`dbtt_from_curve` takes a model's posterior across a temperature slice — the mean and
+standard deviation the Engine's prediction workflow saves — finds where it crosses the
+mid-shelf energy, and propagates the uncertainty through the slope by the delta method,
+`sd_DBTT ≈ sd_Y(T*) / |dY/dT|(T*)`.
+
+The two spreads measure different things and should not be read as checks on each other.
+The AHT posterior is the uncertainty *given the tanh form*. The curve reading divides a
+**predictive** standard deviation — measurement scatter included — by the transition
+gradient, so on a shallow transition it is the wider of the two. The delta method also
+linearises at the crossing and ignores correlation between neighbouring temperatures,
+which a draw-based estimate would capture — the Engine exposes no posterior draws, so
+that is not available.
+
+### Is `C` really `C(T)`?
+
+No — for this material it is a constant. `compare_width_models` fits both the symmetric
+and the asymmetric form and compares by profile evidence, BIC and leave-one-out RMSE. The
+asymmetric form stays available for welds and irradiated material. `dbtt_posterior`
+supports the symmetric model only: with two widths the grid becomes three-dimensional.
 
 ## The SDK
 
@@ -194,6 +258,9 @@ its outputs.
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+`tests/test_recovery.py` is slow — around eight minutes — because the calibration tests
+fit the AHT over many noise seeds. `-k "not coverage"` skips the worst of it.
 
 The workflow-graph tests build every graph with no client, which checks the wiring —
 labels, edges and requested outputs — against the workflows exported from the Engine GUI
