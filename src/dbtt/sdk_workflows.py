@@ -336,6 +336,7 @@ def build_training_workflow(
     model_name: str,
     kernel: str = "LIN+RBF",
     model_type: str = "SingleTaskGPTorch",
+    seed: Optional[int] = 0,
     input_columns: Optional[Sequence[str]] = None,
     output_columns: Optional[Sequence[str]] = None,
 ):
@@ -353,7 +354,7 @@ def build_training_workflow(
     energy = _filter(client, data, "Energy", output_columns or OUTPUT_COLUMNS)
     config = _node(
         client, "ModelConfig", "Gaussian Process",
-        model_type=model_type, kernel=kernel, warp_inputs=False,
+        model_type=model_type, kernel=kernel, warp_inputs=False, seed=seed,
     )
     for node in (data, temp, energy, config):
         graph.add_node(node)
