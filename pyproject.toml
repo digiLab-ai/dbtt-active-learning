@@ -13,18 +13,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "jupyter>=1.0", "nbclient>=0.10"]
-# The engine is a sister repo, installed editable:
-#   uv pip install -e "../uncertainty-engine[gptorch,metrics]"
-# It is not declared as a dependency because it is not published to an index,
-# and because its distribution name collides with the SDK's (see README).
-engine = ["scipy>=1.13", "torch>=2.0"]
-# The SDK is the *other* uncertainty-engine: a remote API client. It ships the
-# same top-level `uncertainty_engine` package as the library, so the two cannot
-# share an environment -- install it into a separate venv:
+# The Uncertainty Engine SDK: a remote API client, published to PyPI. 0.15
+# dropped the per-node classes (`uncertainty_engine.nodes.machine_learning` and
+# friends); nodes are built off the client instead, so <0.15 will not work.
 #   uv venv .venv-sdk --python 3.12
-#   uv pip install --python .venv-sdk -e ../uncertainty-engine-sdk
-#   uv pip install --python .venv-sdk --no-deps -e .
-sdk = ["python-dotenv>=1.0"]
+#   uv pip install --python .venv-sdk -e ".[sdk]"
+sdk = ["uncertainty-engine>=0.15,<0.16", "python-dotenv>=1.0"]
 
 [build-system]
 requires = ["hatchling"]

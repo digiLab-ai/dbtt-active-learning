@@ -62,7 +62,10 @@ def plot_gp(
     Parameters
     ----------
     learner:
-        A :class:`dbtt.active_learning.DBTTActiveLearner`.
+        Anything exposing the learner interface: ``bounds``, the tested
+        points, and a fitted GP to predict with. The in-process learner
+        this was written for has been removed; see notebook 05 for the
+        remote equivalent.
     simulator:
         Optional. Overlays the true curve and true DBTT — simulator-only
         information, for judging the fit. Omit for a real experiment.
