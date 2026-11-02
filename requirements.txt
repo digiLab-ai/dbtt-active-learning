@@ -1,0 +1,21 @@
+# Everything DBTT_active_learning.ipynb needs, for a local kernel:
+#
+#   python -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# On Google Colab none of this is needed: the notebook's first cell installs
+# whatever the runtime is missing.
+
+numpy>=1.26
+pandas>=2.0
+matplotlib>=3.8
+pydantic>=2.6
+scipy>=1.13
+
+# The Uncertainty Engine SDK: the remote API client, published to PyPI. 0.15
+# dropped the per-node classes in favour of building nodes by name off the
+# client, so <0.15 will not work.
+uncertainty-engine>=0.15,<0.16
+python-dotenv>=1.0
+
+# Only needed to run the notebook outside an IDE that brings its own kernel.
+jupyter>=1.0
