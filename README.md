@@ -12,7 +12,7 @@ Everything lives in one notebook:
 | --- | --- |
 | 1. A simulated test campaign | A Charpy simulator stands in for the test house, so every estimate can be scored against a known truth |
 | 2. Active learning on the Engine | Five workflows — train, recommend, visualise, predict, validate — saved to the project and driven in a loop |
-| 3. The DBTT, with its uncertainty | Two routes to a *posterior* over the DBTT, not a point estimate |
+| 3. The DBTT, with its uncertainty | The transition read off the trained model, with the uncertainty that comes with it |
 
 The notebook is **self-contained**: it imports nothing from this repository, so the
 Colab badge works without a checkout. Its supporting code sits in collapsed cells, each
@@ -62,13 +62,16 @@ well the active learning recovers the answer.
 
 ## Two things worth knowing
 
-**The DBTT posterior is the deliverable.** Written as `Y = a + b·h(T)`, the AHT is
-*linear in the shelves* once the shape `(DBTT, C)` is fixed, so the shelves and the noise
-precision integrate out in closed form and the evidence is a function of two parameters
-only. Sweeping those on a grid and marginalising the width gives `p(DBTT | data)` itself,
-rather than a profile or a curvature approximation. Calibration was measured rather than
-assumed: over 25 noise seeds the nominal 95% credible interval contained the truth 24
-times (96%), against 92% for the profile-likelihood interval it replaced.
+**The interval is the deliverable, not the point estimate.** The DBTT is read off the
+trained GP's posterior curve — the crossing of the mid-shelf energy `(LS + US) / 2` — and
+its uncertainty comes from the delta method, `sd_DBTT ≈ sd(T*) / |dY/dT|(T*)`. Read that
+spread with care. The numerator is a *predictive* standard deviation, so it includes the
+material's test-to-test scatter; the denominator is the transition gradient, which is
+precisely what active learning spends its specimens resolving. A steep gradient makes the
+interval tight, and tight is not the same as right. A second, model-free route — fitting
+the AHT to the measurements and marginalising the shelves and noise out in closed form,
+which gives an asymmetric `p(DBTT | data)` rather than a ± number — was removed when the
+notebook was cut back to the GP route, and is recoverable from git history.
 
 **Resource versioning is what makes the loop cheap.** `resources.upload` refuses a name
 the project already holds (409); `resources.update` adds a version and keeps the resource

@@ -9,7 +9,6 @@ numpy>=1.26
 pandas>=2.0
 matplotlib>=3.8
 pydantic>=2.6
-scipy>=1.13
 
 # The Uncertainty Engine SDK: the remote API client, published to PyPI. 0.15
 # dropped the per-node classes in favour of building nodes by name off the
