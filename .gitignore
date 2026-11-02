@@ -7,3 +7,5 @@ __pycache__/
 data/*.csv
 .env
 .venv-sdk/
+.DS_Store
+.vscode/
