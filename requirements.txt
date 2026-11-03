@@ -10,6 +10,10 @@ pandas>=2.0
 matplotlib>=3.8
 pydantic>=2.6
 
+# The notebook's first cell uses this to check the versions above against
+# their specifiers, rather than only checking that the imports resolve.
+packaging>=23.0
+
 # The Uncertainty Engine SDK: the remote API client, published to PyPI. 0.15
 # dropped the per-node classes in favour of building nodes by name off the
 # client, so <0.15 will not work.
