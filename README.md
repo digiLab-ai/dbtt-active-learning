@@ -1,4 +1,4 @@
-# ukaea-dbtt-active-learning
+# dbtt-active-learning
 
 Active learning for ductile–brittle transition temperature (DBTT) testing, against
 the remote [Uncertainty Engine](https://uncertaintyengine.ai).
@@ -6,7 +6,7 @@ the remote [Uncertainty Engine](https://uncertaintyengine.ai).
 Everything lives in one notebook:
 
 **[`DBTT_active_learning.ipynb`](DBTT_active_learning.ipynb)** &nbsp;
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/digiLab-ai/ukaea-dbtt-active-learning/blob/main/DBTT_active_learning.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/digiLab-ai/dbtt-active-learning/blob/main/DBTT_active_learning.ipynb)
 
 | Section | What it does |
 | --- | --- |
@@ -23,13 +23,14 @@ different material, a different campaign or a different model.
 
 One knob is deliberately missing. The GP's **mean function** is not exposed by the
 Engine: `ModelConfig` takes a kernel, not a mean, and `TrainModel` takes only
-`(config, inputs, outputs)`. The kernel is the lever — the `LIN` term in the default
-`LIN+RBF` is what lets the fit carry a linear trend.
+`(config, inputs, outputs)`. The kernel is the lever: the default `M32` carries no
+trend term, and adding one — as in `LIN+M32` — lets the fit carry a linear trend,
+which is most of what a non-constant mean would buy you here.
 
 ## Running it
 
-**Google Colab.** Click the badge. Because the repository is internal you will be asked
-to authorise Colab's GitHub access the first time. Put your credentials in the Secrets
+**Google Colab.** Click the badge. The repository is public, so no GitHub
+authorisation is needed. Put your credentials in the Secrets
 panel (the 🔑 key icon in the left sidebar) as `UE_USERNAME`, `UE_PASSWORD` and
 `UE_PROJECT_NAME`, with *Notebook access* switched on for each. The first cell installs
 whatever the runtime is missing.
