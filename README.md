@@ -14,6 +14,7 @@ Everything lives in one notebook:
 | 1. A simulated test campaign | A Charpy simulator stands in for the test house, so every estimate can be scored against a known truth |
 | 2. Active learning on the Engine | Five workflows — train, recommend, visualise, predict, validate — saved to the project and driven in a loop |
 | 3. The DBTT, with its uncertainty | The transition read off the trained model, with the uncertainty that comes with it |
+| 4. Was the active learning worth it? | Three fixed designs — 10 even, 30 even, 10×3 repeats — through the same machinery, for comparison |
 
 The notebook is **self-contained**: it imports nothing from this repository, so the
 Colab badge works without a checkout. Its supporting code sits in collapsed cells, each
@@ -23,9 +24,9 @@ different material, a different campaign or a different model.
 
 One knob is deliberately missing. The GP's **mean function** is not exposed by the
 Engine: `ModelConfig` takes a kernel, not a mean, and `TrainModel` takes only
-`(config, inputs, outputs)`. The kernel is the lever: the default `M32` carries no
-trend term, and adding one — as in `LIN+M32` — lets the fit carry a linear trend,
-which is most of what a non-constant mean would buy you here.
+`(config, inputs, outputs)`. The kernel is the lever: the `LIN` term in the default
+`LIN+RBF` is what lets the fit carry a linear trend, which is most of what a
+non-constant mean would buy you here.
 
 ## Running it
 
